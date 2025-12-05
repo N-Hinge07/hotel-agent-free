@@ -1,3 +1,4 @@
+# src/schemas.py
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
@@ -12,5 +13,3 @@ class ChatResponse(BaseModel):
     intent: Optional[str] = None
     suggested_actions: Optional[List[str]] = None
     context: Optional[Dict[str, Any]] = None
-
-

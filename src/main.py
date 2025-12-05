@@ -1,30 +1,33 @@
 # src/main.py
-import os
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from .schemas import ChatRequest, ChatResponse
-from .agent import run_agent
+from .agent import run_agent, client
 
-APP_TITLE = "Hotel Agent - Gemini/OpenAI Fallback"
+APP_TITLE = "Hotel Agent - Simple"
 APP_VERSION = "0.1.0"
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    ch = logging.StreamHandler()
+    ch.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    logger.addHandler(ch)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # startup code
-    print("Starting app - lifespan startup")
-    # optionally: warm clients or log backend choice
+    logger.info("Starting app - backend=%s", getattr(client, "backend", "mock"))
     yield
-    # shutdown code
-    print("Stopping app - lifespan shutdown")
+    logger.info("Stopping app")
 
 app = FastAPI(title=APP_TITLE, version=APP_VERSION, lifespan=lifespan)
 
-# Optional: allow CORS for local dev / UI apps
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # narrow in production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,12 +35,12 @@ app.add_middleware(
 
 @app.get("/")
 def root():
-    return {"status": "ok", "app": APP_TITLE, "version": APP_VERSION}
+    return {"status": "ok", "app": APP_TITLE, "version": APP_VERSION, "backend": getattr(client, "backend", "mock")}
 
 @app.post("/chat", response_model=ChatResponse)
 def chat_endpoint(request: ChatRequest):
     try:
-        response = run_agent(request)
-        return response
+        return run_agent(request)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Unhandled error")
+        raise HTTPException(status_code=500, detail="Internal server error")
