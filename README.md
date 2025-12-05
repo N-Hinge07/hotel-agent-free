@@ -19,3 +19,4 @@
    http://127.0.0.1:8000/docs
 
 If no keys are set, the /chat endpoint will return a mock reply for testing.
+# hotel-agent-free
