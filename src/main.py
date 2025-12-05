@@ -1,4 +1,3 @@
-# src/main.py
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
@@ -27,7 +26,7 @@ app = FastAPI(title=APP_TITLE, version=APP_VERSION, lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],   # fine for local/demo; narrow in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,10 +36,15 @@ app.add_middleware(
 def root():
     return {"status": "ok", "app": APP_TITLE, "version": APP_VERSION, "backend": getattr(client, "backend", "mock")}
 
+@app.get("/health")
+def health():
+    return {"status": "ok", "backend": getattr(client, "backend", "mock")}
+
 @app.post("/chat", response_model=ChatResponse)
 def chat_endpoint(request: ChatRequest):
     try:
-        return run_agent(request)
-    except Exception as e:
-        logger.exception("Unhandled error")
+        response = run_agent(request)
+        return response
+    except Exception:
+        logger.exception("Unhandled error in /chat")
         raise HTTPException(status_code=500, detail="Internal server error")

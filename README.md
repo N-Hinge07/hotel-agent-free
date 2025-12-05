@@ -1,22 +1,16 @@
-# Hotel Agent Free
+# Hotel Agent - Room Service (Simple)
 
-## Setup
-1. Create & activate venv:
-   python -m venv venv
-   source venv/bin/activate
+## Overview
+Small FastAPI app that implements a hotel room service agent:
+- Parse natural language orders (simple rules + synonyms)
+- Match menu items from `data/menu.json`
+- Handle dietary preferences, availability, and confirmations
+- In-memory session handling (multi-turn)
+- Works without any API key (mock mode). Optional Gemini/OpenAI support if keys provided.
 
-2. Install:
-   pip install -r requirements.txt
-
-3. (Optional) set keys:
-   export GEMINI_API_KEY="..."
-   export OPENAI_API_KEY="..."
-
-4. Run server:
-   uvicorn src.main:app --reload --port 8000
-
-5. Open Swagger UI:
-   http://127.0.0.1:8000/docs
-
-If no keys are set, the /chat endpoint will return a mock reply for testing.
-# hotel-agent-free
+## Run locally
+1. Create a virtual env and install:
+```bash
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt

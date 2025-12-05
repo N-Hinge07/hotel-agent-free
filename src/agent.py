@@ -10,7 +10,7 @@ from dataclasses import dataclass, asdict
 
 from .schemas import ChatRequest, ChatResponse
 
-# try LLM libs lazily (we won't require them for mock mode)
+# Lazy LLM imports (optional; safe if not installed)
 try:
     import google.generativeai as genai
     _HAS_GENAI = True
@@ -45,7 +45,7 @@ class OrderItem:
 
 class AgentClient:
     def __init__(self):
-        # backend selection: gemini / openai / mock
+        # backend selection
         self.gemini_key = os.environ.get("GEMINI_API_KEY")
         self.openai_key = os.environ.get("OPENAI_API_KEY")
         self.backend = "mock"
@@ -59,69 +59,119 @@ class AgentClient:
             self.backend = "openai"
         logger.info("Agent backend: %s", self.backend)
 
-        # load local menu
+        # synonyms to help matching
+        self.synonyms = {
+            "fries": "French Fries",
+            "chips": "French Fries",
+            "lava cake": "Chocolate Lava Cake",
+            "chicken sandwich": "Grilled Chicken Sandwich",
+            "caesar salad": "Veg Caesar Salad",
+            "salad": "Veg Caesar Salad",
+        }
+
+        # load menu (data/menu.json or data/data.json fallback)
         self.menu = self._load_menu()
-        # simple in-memory sessions: session_id -> context dict
+
+        # in-memory session store: session_id -> context dict
         self.sessions: Dict[str, Dict[str, Any]] = {}
 
+    # -------------------------
+    # Menu loader
+    # -------------------------
     def _load_menu(self) -> List[Dict[str, Any]]:
         base = Path(__file__).resolve().parents[1]
-        menu_path = base / "data" / "menu.json"
-        if menu_path.exists():
+        menu_path1 = base / "data" / "menu.json"
+        menu_path2 = base / "data" / "data.json"
+        chosen = None
+        if menu_path1.exists():
+            chosen = menu_path1
+        elif menu_path2.exists():
+            chosen = menu_path2
+
+        if chosen:
             try:
-                with open(menu_path, "r", encoding="utf-8") as f:
+                with open(chosen, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    logger.info("Loaded menu.json with %d items", len(data))
+                    logger.info("Loaded menu from %s (%d items)", chosen, len(data))
                     return data
             except Exception as e:
-                logger.error("Failed to load data/menu.json: %s", e)
-        logger.warning("No menu.json found; starting with empty menu")
+                logger.error("Failed to load menu file: %s", e)
+        logger.warning("No menu file found; starting with empty menu.")
         return []
 
+    # -------------------------
+    # Helpers: normalize & synonyms
+    # -------------------------
     def _normalize(self, s: str) -> str:
         return re.sub(r"[^a-z0-9 ]", "", s.lower())
 
+    # -------------------------
+    # Matching items by name/tag/synonym
+    # -------------------------
     def match_items(self, text: str) -> List[OrderItem]:
-        """Match menu items by name or tag using simple rules."""
+        """Return list of OrderItem matched from the menu."""
+        if not self.menu:
+            return []
+
         normalized = self._normalize(text)
+
+        # apply synonyms
+        for k, v in self.synonyms.items():
+            if k in normalized:
+                normalized = normalized.replace(k, self._normalize(v))
+
         found: List[OrderItem] = []
         for item in self.menu:
             name = item.get("name", "")
             tags = item.get("tags", []) or []
+            id_ = item.get("id") or item.get("_id") or name
+
+            # exact name contained
             if self._normalize(name) in normalized:
-                found.append(OrderItem(name=name, tags=tags, available=item.get("available", True),
-                                       prep_time_min=item.get("prep_time_min"), menu_id=item.get("id") or item.get("id")))
+                found.append(OrderItem(name=name, tags=tags, available=bool(item.get("available", True)),
+                                       prep_time_min=item.get("prep_time_min"), menu_id=str(id_)))
                 continue
-            # token matching
+
+            # token match in name
             for tok in normalized.split():
                 if tok and tok in self._normalize(name).split():
-                    found.append(OrderItem(name=name, tags=tags, available=item.get("available", True),
-                                           prep_time_min=item.get("prep_time_min"), menu_id=item.get("id") or item.get("id")))
+                    found.append(OrderItem(name=name, tags=tags, available=bool(item.get("available", True)),
+                                           prep_time_min=item.get("prep_time_min"), menu_id=str(id_)))
                     break
+
             # tag match
             for tag in tags:
                 if tag and tag in normalized:
-                    found.append(OrderItem(name=name, tags=tags, available=item.get("available", True),
-                                           prep_time_min=item.get("prep_time_min"), menu_id=item.get("id") or item.get("id")))
+                    found.append(OrderItem(name=name, tags=tags, available=bool(item.get("available", True)),
+                                           prep_time_min=item.get("prep_time_min"), menu_id=str(id_)))
                     break
-        # dedupe by name
-        uniq = {}
+
+        # dedupe by menu_id
+        uniq: Dict[str, OrderItem] = {}
         for o in found:
-            uniq[o.name] = o
+            uniq[o.menu_id or o.name] = o
         return list(uniq.values())
 
+    # -------------------------
+    # Simple parser: intents & quantity detection
+    # -------------------------
     def parse(self, text: str) -> Dict[str, Any]:
-        """Very small rule-based parser: greeting, cancel, confirm, set pref, order."""
         t = text.strip().lower()
 
-        if re.search(r"\b(hi|hello|hey)\b", t):
+        # greeting
+        if re.search(r"\b(hi|hello|hey|good morning|good evening)\b", t):
             return {"intent": "greeting", "items": [], "dietary": []}
-        if re.search(r"\b(cancel|never mind|stop)\b", t):
+
+        # cancel
+        if re.search(r"\b(cancel|never mind|stop|don't)\b", t):
             return {"intent": "cancel", "items": [], "dietary": []}
-        if re.fullmatch(r"\b(yes|confirm|please)\b", t):
+
+        # confirm (short positive)
+        if re.fullmatch(r"\b(yes|yep|confirm|please|sure|ok)\b", t):
             return {"intent": "confirm", "items": [], "dietary": []}
-        # preference
-        if "vegetarian" in t or "vegan" in t or "no onion" in t or "no dairy" in t:
+
+        # set preferences
+        if any(k in t for k in ("vegetarian", "vegan", "no onion", "no dairy", "dairy-free", "nut allergy")):
             dietary = []
             if "vegetarian" in t or "vegan" in t:
                 dietary.append("vegetarian")
@@ -129,36 +179,58 @@ class AgentClient:
                 dietary.append("no_onion")
             if "no dairy" in t or "dairy-free" in t:
                 dietary.append("no_dairy")
+            if "nut" in t:
+                dietary.append("no_nuts")
             return {"intent": "set_preference", "items": [], "dietary": dietary}
-        # order keywords
+
+        # quantity pattern e.g., "2 fries" or "2 x fries"
+        qty_match = re.search(r"(\d+)\s*(?:x|pcs|pieces)?\s*(.+)", t)
+        if qty_match:
+            qty = int(qty_match.group(1))
+            item_text = qty_match.group(2)
+            matches = self.match_items(item_text)
+            for m in matches:
+                m.quantity = qty
+            if matches:
+                return {"intent": "order_food", "items": matches, "dietary": []}
+
+        # order verbs or short utterance (1-3 words)
         if re.search(r"\b(order|i want|i'd like|get me|bring me|please get|i need)\b", t) or len(t.split()) <= 3:
-            items = self.match_items(text)
-            if items:
-                return {"intent": "order_food", "items": items, "dietary": []}
-            # fallback: if nothing matched, return unknown but candidate for clarification
-            return {"intent": "clarify", "items": [], "dietary": []}
+            matches = self.match_items(text)
+            if matches:
+                return {"intent": "order_food", "items": matches, "dietary": []}
+            else:
+                # ambiguous short query -> clarify
+                return {"intent": "clarify", "items": [], "dietary": []}
+
+        # fallback unknown
         return {"intent": "unknown", "items": [], "dietary": []}
 
-    def _save_session(self, session_id: str, ctx: Dict[str, Any]):
-        self.sessions[session_id] = ctx
-
-    def _load_session(self, session_id: str) -> Dict[str, Any]:
+    # -------------------------
+    # Session management (simple in-memory)
+    # -------------------------
+    def _load_session(self, session_id: Optional[str]) -> (str, Dict[str, Any]):
         if not session_id:
             session_id = f"guest-{int(time.time())}"
         if session_id not in self.sessions:
             self.sessions[session_id] = {"preferences": {}, "pending": None, "history": []}
-        return self.sessions[session_id]
+        return session_id, self.sessions[session_id]
 
+    def _save_session(self, session_id: str, ctx: Dict[str, Any]):
+        self.sessions[session_id] = ctx
+
+    # -------------------------
+    # Core orchestrator
+    # -------------------------
     def run(self, request: ChatRequest) -> ChatResponse:
         text = request.message
-        session_id = request.session_id or f"guest-{request.guest_id or int(time.time())}"
-        ctx = self._load_session(session_id)
+        session_id, ctx = self._load_session(request.session_id)
 
         parsed = self.parse(text)
 
         # greeting
         if parsed["intent"] == "greeting":
-            return ChatResponse(session_id=session_id, reply="Hello! How can I help with room service?", intent="greeting")
+            return ChatResponse(session_id=session_id, reply="Hello! How can I help with room service today?", intent="greeting")
 
         # set preferences
         if parsed["intent"] == "set_preference":
@@ -173,7 +245,7 @@ class AgentClient:
             self._save_session(session_id, ctx)
             return ChatResponse(session_id=session_id, reply="Cancelled your pending request.", intent="cancel")
 
-        # confirm (place pending order)
+        # confirm -> if pending order exists, place it (in-memory)
         if parsed["intent"] == "confirm":
             if ctx.get("pending"):
                 order = ctx["pending"]
@@ -182,18 +254,20 @@ class AgentClient:
                 self._save_session(session_id, ctx)
                 return ChatResponse(session_id=session_id, reply="Order placed. Thank you!", intent="confirm", context={"history": ctx["history"]})
             else:
-                return ChatResponse(session_id=session_id, reply="Nothing to confirm — no pending order.", intent="confirm")
+                return ChatResponse(session_id=session_id, reply="Nothing to confirm.", intent="confirm")
 
-        # placing an order
+        # order flow
         if parsed["intent"] == "order_food":
-            items = parsed.get("items", [])
-            # check dietary conflicts using preferences
+            items: List[OrderItem] = parsed.get("items", [])
+            if not items:
+                return ChatResponse(session_id=session_id, reply="I couldn't find that item. Can you name it differently?", intent="clarify", suggested_actions=["provide_item_name"])
+
+            # check preferences and availability
             prefs = ctx.get("preferences", {})
             conflicts = []
             unavailable = []
             for o in items:
-                # conflict: vegetarian preference but item non-veg tag
-                tags = (o.tags or [])
+                tags = o.tags or []
                 if prefs.get("vegetarian") and any(t in ("non-veg", "chicken", "beef", "pork", "fish", "egg") for t in tags):
                     conflicts.append(o)
                 if not o.available:
@@ -203,29 +277,53 @@ class AgentClient:
                 names = ", ".join([c.name for c in conflicts])
                 ctx["pending"] = {"items": [asdict(i) for i in items]}
                 self._save_session(session_id, ctx)
-                return ChatResponse(session_id=session_id, reply=f"These items conflict with your dietary preferences: {names}. Replace or remove?", intent="confirm", suggested_actions=["replace_item", "remove_item"], context={"conflicts":[asdict(c) for c in conflicts]})
+                return ChatResponse(
+                    session_id=session_id,
+                    reply=f"These items conflict with your dietary preferences: {names}. Replace or remove?",
+                    intent="confirm",
+                    suggested_actions=["replace_item", "remove_item"],
+                    context={"conflicts": [asdict(c) for c in conflicts]},
+                )
 
             if unavailable:
                 names = ", ".join([u.name for u in unavailable])
                 ctx["pending"] = {"items": [asdict(i) for i in items]}
                 self._save_session(session_id, ctx)
-                return ChatResponse(session_id=session_id, reply=f"Sorry, these are unavailable: {names}. Would you like alternatives?", intent="clarify", suggested_actions=["offer_alternatives"], context={"unavailable":[asdict(u) for u in unavailable]})
+                return ChatResponse(
+                    session_id=session_id,
+                    reply=f"Sorry, these are currently unavailable: {names}. Would you like alternatives?",
+                    intent="clarify",
+                    suggested_actions=["offer_alternatives"],
+                    context={"unavailable": [asdict(u) for u in unavailable]},
+                )
 
-            # OK: prepare confirmation
+            # else prepare confirmation with ETA
             eta = sum([o.prep_time_min or 0 for o in items])
             ctx["pending"] = {"items": [asdict(i) for i in items], "eta_min": eta}
             self._save_session(session_id, ctx)
             item_names = ", ".join([f"{i.quantity} x {i.name}" for i in items])
-            return ChatResponse(session_id=session_id, reply=f"Confirm: {item_names}. ETA ~{eta} min. Shall I place the order?", intent="confirm_request", suggested_actions=["confirm", "modify", "cancel"], context={"pending": ctx["pending"]})
+            return ChatResponse(
+                session_id=session_id,
+                reply=f"Confirming: {item_names}. ETA ~{eta} minutes. Shall I place the order?",
+                intent="confirm_request",
+                suggested_actions=["confirm", "modify", "cancel"],
+                context={"pending": ctx["pending"]},
+            )
 
-        # clarify / unknown
+        # clarify or unknown
         if parsed["intent"] in ("clarify", "unknown"):
-            return ChatResponse(session_id=session_id, reply="I didn't catch that item. Could you specify the dish name (e.g., 'Grilled Chicken Sandwich')?", intent="clarify", suggested_actions=["provide_item_name"])
+            return ChatResponse(
+                session_id=session_id,
+                reply="I didn't understand — can you specify the dish name (e.g., 'Grilled Chicken Sandwich')?",
+                intent="clarify",
+                suggested_actions=["provide_item_name"],
+            )
 
         # fallback
         return ChatResponse(session_id=session_id, reply="Sorry, I couldn't process that.", intent="error")
 
-# single client instance and helper function
+
+# single client instance & helper
 client = AgentClient()
 
 def run_agent(request: ChatRequest) -> ChatResponse:
