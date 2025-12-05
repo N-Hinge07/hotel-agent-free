@@ -1,0 +1,32 @@
+[
+  {
+    "item_id": "M001",
+    "name": "Veg Sandwich",
+    "category": "veg",
+    "ingredients": ["bread", "vegetables", "cheese", "mayo"],
+    "diet_tags": ["vegetarian"],
+    "price": 150,
+    "available_qty": 10,
+    "prep_time_min": 10
+  },
+  {
+    "item_id": "M002",
+    "name": "Club Sandwich",
+    "category": "non-veg",
+    "ingredients": ["bread", "chicken", "lettuce", "mayo"],
+    "diet_tags": ["non-vegetarian"],
+    "price": 220,
+    "available_qty": 5,
+    "prep_time_min": 15
+  },
+  {
+    "item_id": "M003",
+    "name": "French Fries",
+    "category": "veg",
+    "ingredients": ["potato", "salt", "oil"],
+    "diet_tags": ["vegetarian"],
+    "price": 90,
+    "available_qty": 20,
+    "prep_time_min": 8
+  }
+]
